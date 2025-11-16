@@ -252,8 +252,7 @@ z-index: 1000;
 /*** === CONFIG === ***/
 // app script URL for logging
 // const LOGGER_URL = "https://script.google.com/macros/s/AKfycbzSa2pAl8Ll1bLndkRP8phOh2AcRsDfTjPCT6I3EkNGGpbTy9m17Q0WX7fxXgDIWQLm/exec"; // (qbank + replay + attempt)
-// GRANT loliveir + yiningt
-const LOGGER_URL = "https://script.google.com/macros/s/AKfycbz0i6D5M2a5B9RT5Tc4uJlByE8OznxzInrecKHgK_qaDzcqR6SITTO6_KXvWyxQeHBUzA/exec";
+const LOGGER_URL = "https://script.google.com/macros/s/AKfycbzJlPkMetpvvtqMUt2hVlmYT9mWymOjuH_iyd8m6_IEgLmf5GL-gB1sIJCZ37THjeiwDA/exec";
 const MAX_VIDEO_MINUTES = 20;
 
 const MAX_ATTEMPTS = 1; // Maximum allowed attempts
@@ -263,9 +262,12 @@ let sessionId = crypto.randomUUID();
 let participantId = '';
 let initialTreatmentGroup = -1; // Treatment assigned by the server (persisted)
 let treatmentGroup = -1; // CURRENT treatment group (0 or 1) for the attempt
-let attemptIndex = 0; // Current attempt index (1 or 2)
-let postQuizScore = 0; // Score Y from the second attempt, or X from the first attempt
-let attempt1Score = -1;
+// ======================= START: CODE MODIFIED =======================
+let mainAttemptNumber = 0;      // Which major attempt cycle the user is on (1, 2, 3...)
+let attemptIndex = 1;           // Which sub-attempt within a cycle (1=initial, 2=retake)
+let postQuizScore = 0;          // Score from the most recent quiz
+let attempt1Score = -1;         // Score from the FIRST sub-attempt of the CURRENT cycle
+// ======================== END: CODE MODIFIED ========================
 let page = 'intro';
 let sessionStartTime = Date.now();
 let eventCounter = 0;
@@ -313,7 +315,7 @@ const parts = [
   },
   { partNumber: 4, topic: "Key Takeaway",
     mainSrc: "https://www.dropbox.com/scl/fi/68835bk10zciz9nro70d6/td_4.mp4?rlkey=1736y56ht0b1incuxo6g17lz8&st=y9bqqtsv&raw=1",
-    altSrc: "https://www.dropbox.com/scl/fi/n0dvapl8tgahkglajr2qg/TD_part_4.mp4?rlkey=skumh5m2a1vo7gf1t7wftv4ww&st=ujb8bwny&raw=1"
+altSrc: "https://www.dropbox.com/scl/fi/n0dvapl8tgahkglajr2qg/TD_part_4.mp4?rlkey=skumh5m2a1vo7gf1t7wftv4ww&st=ujb8bwny&raw=1"
   },
 ];
 
@@ -368,7 +370,10 @@ function logEvent(event, payload = {}, videoTime = null) {
     payload, sessionTime, timestamp: Date.now(), sequence: eventCounter,
     initialTreatmentGroup, // Include initial treatment
     treatmentGroup, // Include current attempt's treatment group
-    attemptIndex // Include current attempt index
+    // ======================= START: CODE MODIFIED =======================
+    mainAttemptNumber, // Log the main attempt number
+    attemptIndex // Log the sub-attempt number (1 or 2)
+    // ======================== END: CODE MODIFIED ========================
 };
 
 const displaySessionTime = fmt(sessionTime);
@@ -799,43 +804,39 @@ async function verifyAndSetState() {
     clearInterval(interval);
     bar.style.width = "100%";
     setTimeout(() => {
-      if (result.blocked) {
-        show('screen-blocked');
-        enterPage('blocked');
-      } else {
-        // --- Core logic for attempt and treatment assignment ---
-        // This is only executed on the initial screen-id check (or a retake attempt's re-entry)
-        initialTreatmentGroup = parseInt(result.treatment, 10); // Persisted treatment
-        // For a full refresh/re-entry, the server will correctly return currentAttempt=2 if A1 was logged as finished
-        let currentAttemptFromServer = parseInt(result.currentAttempt, 10);
-
-        if (currentAttemptFromServer === 1) {
-             attemptIndex = 1;
-             treatmentGroup = initialTreatmentGroup; // Use initial for first attempt
-        } else if (currentAttemptFromServer === 2) {
-             attemptIndex = 2;
-             treatmentGroup = 1 - initialTreatmentGroup; // Switch for second attempt
+        // ======================= START: CODE REPLACED =======================
+        if (result.blocked) {
+            show('screen-blocked');
+            enterPage('blocked');
         } else {
-             // Block if somehow attempts > 2
-             show('screen-blocked');
-             enterPage('blocked');
-             return;
-        }
-                           
-        console.log(`Participant initial treatment: ${initialTreatmentGroup}, Current Attempt: ${attemptIndex}, Used Treatment: ${treatmentGroup}`);
-        
-        // Re-generate quizzes for a fresh set of questions (especially for post-quiz)
-        generateQuizzes();
-        renderQuiz('pre-quiz', preQuestions);
-        renderQuiz('post-quiz', postQuestions);
+            // --- Core logic for attempt and treatment assignment ---
+            // 1. ALWAYS reset the frontend's internal state for a new main attempt.
+            attemptIndex = 1;    // This is a sub-attempt, always start at 1.
+            attempt1Score = -1;  // Reset score from previous main attempts.
 
-        show('screen-pre');
-        enterPage('pre-test');
-        // Render math again in case it's a retake
-        renderLatexIn(document.getElementById('screen-pre')); 
-        // Clear old answers if it's a retake
-        clearAllQuizAnswers();
-      }
+            // 2. Get state from the server.
+            mainAttemptNumber = parseInt(result.currentAttempt, 10);
+            initialTreatmentGroup = parseInt(result.treatment, 10);
+
+            // 3. Determine the STARTING treatment for THIS main attempt.
+            // Odd main attempts (1, 3, ...) get the initial treatment.
+            // Even main attempts (2, 4, ...) get the alternate treatment.
+            treatmentGroup = (mainAttemptNumber % 2 === 1) 
+                ? initialTreatmentGroup 
+                : (1 - initialTreatmentGroup);
+                               
+            console.log(`Main Attempt: ${mainAttemptNumber}, Initial User T: ${initialTreatmentGroup}, Starting T for this cycle: ${treatmentGroup}`);
+            
+            generateQuizzes();
+            renderQuiz('pre-quiz', preQuestions);
+            renderQuiz('post-quiz', postQuestions);
+
+            show('screen-pre');
+            enterPage('pre-test');
+            renderLatexIn(document.getElementById('screen-pre')); 
+            clearAllQuizAnswers();
+        }
+        // ======================== END: CODE REPLACED ========================
     }, 500);
   } catch (err) {
     clearInterval(interval);
@@ -889,44 +890,44 @@ document.getElementById('to-survey').addEventListener('click', () => {
     const { correct, total } = calculateScore(postQuestions);
     postQuizScore = correct; 
     
+    // This logic is now correct because `attemptIndex` is properly managed (1 for first try, 2 for retake).
     if (attemptIndex === 1) {
         attempt1Score = postQuizScore;
         
-        // Set the score display for Attempt 1
+        // Update the title and text for the first sub-attempt
+        document.getElementById('attempt-status-1').querySelector('h2').textContent = `Attempt ${mainAttemptNumber} (Part 1) Complete`;
         document.getElementById('grade-display-x').textContent = attempt1Score;
         document.getElementById('total-q-1').textContent = total;
         
-        // ======================= START: CODE TO ADD =======================
-        // This creates the dynamic text and inserts it into the paragraph.
         const retakeText = `We would like to give you a chance to improve your grade. Do you want to try again? If you do, and you get a grade of $\\mathbf{Y}$ points, we will give you either $\\mathbf{\\textcolor{#1f6feb}{${attempt1Score}}}$ or $\\mathbf{(\\textcolor{#1f6feb}{${attempt1Score}}+Y)/2}$ points as your final grade, whichever is the highest.`;
         document.getElementById('retake-prompt-text').innerHTML = retakeText;
 
-        // ======================== END: CODE TO ADD ========================
-
-        // Show prompt box for A1
+        // Show the retake prompt
         document.getElementById('attempt-status-1').classList.remove('hidden');
         document.getElementById('attempt-status-2').classList.add('hidden');
         
     } else if (attemptIndex === 2) {
-        // Set the score display for Attempt 2
-        document.getElementById('grade-display-y').textContent = postQuizScore;
-        document.getElementById('total-q-2').textContent = total;
-
         const finalGrade = Math.max(attempt1Score, (attempt1Score + postQuizScore) / 2);
 
-        // Populate the detailed final grade summary
+        // Update titles and text for the final summary of this main attempt
+        document.getElementById('attempt-status-2').querySelector('h2').textContent = `Attempt ${mainAttemptNumber} (Part 2) Complete`;
+        document.getElementById('grade-display-y').textContent = postQuizScore;
+        document.getElementById('total-q-2').textContent = total;
         document.getElementById('attempt1-score-display').textContent = attempt1Score;
         document.getElementById('attempt2-score').textContent = postQuizScore;
         document.getElementById('total-q-attempts').textContent = total;
         document.getElementById('final-score').textContent = finalGrade;
         document.getElementById('total-q-final').textContent = total;
+        
+        // The summary paragraph needs to reference the correct part numbers
+        const summary_p = document.getElementById('attempt-status-2').querySelectorAll('p')[1];
+        summary_p.innerHTML = `Thank you for completing this attempt. Your grade in Part 1 was <strong style="color:#1f6feb;">${attempt1Score}</strong> points and your grade in Part 2 is <strong style="color:#1f6feb;">${postQuizScore}</strong> points (both out of ${total}), so your final grade for this attempt is <strong style="color:#1f6feb;">${finalGrade}</strong> points out of ${total}.`;
 
-        // Show prompt box for A2
+        // Show the final summary view
         document.getElementById('attempt-status-1').classList.add('hidden');
         document.getElementById('attempt-status-2').classList.remove('hidden');
     }
     
-    // Both A1 and A2 go to the Grade Prompt screen
     show('screen-grade-prompt');
     enterPage('grade-prompt');
     renderLatexIn(document.getElementById('screen-grade-prompt')); 
@@ -935,28 +936,26 @@ document.getElementById('to-survey').addEventListener('click', () => {
 // --- Grade Prompt Handlers ---
 document.getElementById('prompt-yes').addEventListener('click', () => {
     logEvent('retake-accepted', { 
-        attempt: 1, 
+        attempt: attemptIndex, 
         scoreX: attempt1Score, 
         currentTreatment: treatmentGroup,
         nextTreatment: 1 - treatmentGroup
     });
     
-    // ======================= START: SIMPLIFIED SCORE LOGGING =======================
-    // Log the score for attempt 1.
     logEvent('quiz-score', { score: attempt1Score });
-    // ======================== END: SIMPLIFIED SCORE LOGGING ========================
-
-    logEvent('attempt-1-checkpoint', { score: attempt1Score });
+    logEvent(`attempt-${attemptIndex}-checkpoint`, { score: attempt1Score });
     clearTimeout(batchTimer);
-    sendBatch(); // Send the current log queue
+    sendBatch();
         
-    // 2. Prepare for the second attempt
+    // 2. Prepare for the second part (retake) of the current main attempt
     sessionId = crypto.randomUUID(); 
     sessionStartTime = Date.now();
     eventCounter = 0;
     
-    attemptIndex = 2;
-    treatmentGroup = 1 - initialTreatmentGroup;
+    // ======================= START: CODE MODIFIED =======================
+    attemptIndex = 2; // Move to the second sub-attempt
+    treatmentGroup = 1 - treatmentGroup; // Flip the treatment for the retake
+    // ======================== END: CODE MODIFIED ========================
     
     acceptedAltPrompt = false; 
     
@@ -969,35 +968,26 @@ document.getElementById('prompt-yes').addEventListener('click', () => {
 
     clearAllQuizAnswers();
     
-    // 3. Jump directly to the first video part
+    // 3. Jump to the video for the retake
     show('screen-video-1');
     enterPage('video-1');
     setupVideoLogging();
 });
 
 function determineFinalSurveyKey() {
-    // ever accepted the prompt to watch an alternative video, regardless of their treatment group.
     if (hasEverWatchedAltVideo) {
-        // This key must point to your survey with all 8 questions.
         finalSurveyKey = 'treatment_1_with_replay'; 
     } else {
-        // This key must point to your survey with only the first 5 questions.
         finalSurveyKey = 'treatment_0'; 
     }
 }
 
 document.getElementById('prompt-no').addEventListener('click', () => {
-    logEvent('retake-declined', { attempt: 1, finalScore: attempt1Score });
-
-    // ======================= START: SIMPLIFIED SCORE LOGGING =======================
-    // Log the score for attempt 1.
+    logEvent('retake-declined', { attempt: attemptIndex, finalScore: attempt1Score });
     logEvent('quiz-score', { score: attempt1Score });
-    // ======================== END: SIMPLIFIED SCORE LOGGING ========================
     
-    // This decides which survey to use right at the moment it's needed.
     determineFinalSurveyKey();
     
-    // Go to Survey
     generateSurveyQuestions();
     renderQuiz('survey-quiz', surveyQuestions);
     show('screen-survey');
@@ -1007,16 +997,11 @@ document.getElementById('prompt-no').addEventListener('click', () => {
 
 document.getElementById('to-finish-final').addEventListener('click', () => {
     const finalGrade = Math.max(attempt1Score, (attempt1Score + postQuizScore) / 2);
-    logEvent('retake-complete', { attempt: 2, scoreY: postQuizScore, finalScore: finalGrade });
-
-    // ======================= START: SIMPLIFIED SCORE LOGGING =======================
-    // Log the score for attempt 2.
+    logEvent('retake-complete', { attempt: attemptIndex, scoreY: postQuizScore, finalScore: finalGrade });
     logEvent('quiz-score', { score: postQuizScore });
-    // ======================== END: SIMPLIFIED SCORE LOGGING ========================
 
     determineFinalSurveyKey();
     
-    // Go to Survey. 
     generateSurveyQuestions(); 
 
     renderQuiz('survey-quiz', surveyQuestions);
@@ -1033,7 +1018,6 @@ document.getElementById('to-finish-from-survey').addEventListener('click', () =>
     }
     logEvent('survey-complete');
     
-    // Final exit
     logEvent('enter-page', { at: ts(), page: 'finish' }); 
     show('screen-done');
     enterPage('finish');
@@ -1042,10 +1026,8 @@ document.getElementById('to-finish-from-survey').addEventListener('click', () =>
 });
 
 function generateSurveyQuestions() {
-    // Use the determined key, which must be set when A1 or A2 finishes
     surveyQuestions = allSurveyQuestions[finalSurveyKey];
     if (!surveyQuestions) {
-        // Fallback in case of error
         console.error(`Invalid finalSurveyKey: ${finalSurveyKey}. Falling back to treatment_0.`);
         surveyQuestions = allSurveyQuestions.treatment_0;
     }
@@ -1208,9 +1190,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         mediumQuestions = data.mediumQuestions;
         hardQuestions = data.hardQuestions;
         allSurveyQuestions = data.surveyQuestions;
-
-        // Initial quiz generation will happen inside verifyAndSetState() 
-        // to ensure we have the attemptIndex before generating the question set.
 
     } catch (error) {
         console.error('Fatal Error: Could not load or parse questions.', error);
